@@ -1,0 +1,104 @@
+#!/usr/bin/ansible-playbook
+
+- name: fetch data from foreman server
+  hosts: localhost
+  gather_facts: no
+
+  vars_prompt:
+    - name: foreman_user
+      prompt: Foreman Username
+      type: str
+    - name: foreman_password
+      prompt: Foreman Password
+      type: str
+      private: yes
+    - name: foreman_fqdn
+      prompt: Foreman FQDN
+      type: string
+
+  tasks:
+    - name: get host records from foreman api
+      uri:
+        url: "https://{{foreman_fqdn}}/api/hosts"
+        method: GET
+        user: "{{ foreman_user }}"
+        password: "{{ foreman_password }}"
+        force_basic_auth: yes
+        status_code: 200
+      register: foreman_hosts_results
+
+- name: update dhcp servers
+  hosts: "!localhost"
+  gather_facts: no
+  become: yes
+  serial: 1
+  any_errors_fatal: yes
+
+  vars:
+    dhcpd_hosts_dir: /etc/dhcp/hosts.d
+    hosts_prefix: foreman
+
+  vars_prompt:
+    - name: foreman_subnet_id
+      prompt: Foreman Subnet ID
+      type: int
+      default: 1
+
+  tasks:
+    - name: get foreman api results
+      set_fact:
+        foreman_hosts: "{{ hostvars.localhost.foreman_hosts_results.json }}"
+
+    - name: create dhcp reservations
+      template:
+        src: templates/dhcp_host.conf.j2
+        dest: "{{ dhcpd_hosts_dir }}/{{ hosts_prefix }}_{{ item.name }}.conf"
+        owner: root
+        group: root
+        mode: "0640"
+      loop: '{{ foreman_hosts.results }}'
+      loop_control:
+        label: '{{ item.name }}'
+      when:
+        - item.ip != None
+        - item.subnet_id == foreman_subnet_id
+      register: current_dhcpd_files
+      notify: restart dhcpd
+
+    - name: get all existing foreman dhcpd entries
+      shell: "ls {{ dhcpd_hosts_dir }}/{{ hosts_prefix }}_*.conf"
+      ignore_errors: yes
+      register: all_dhcpd_files
+      changed_when: False
+
+    - name: get all required foreman dhcpd entries
+      set_fact:
+        req_dhcpd_files: >
+          {{ current_dhcpd_files.results | json_query('[].dest') }}
+      changed_when: False
+
+    - name: release dhcpd reservations
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ all_dhcpd_files.stdout_lines | difference(req_dhcpd_files) }}"
+      notify: restart dhcpd
+
+  handlers:
+    - name: restart dhcpd - include all file
+      template:
+        src: templates/dhcp_all_host.conf.j2
+        dest: "{{ dhcpd_hosts_dir }}/0_{{ hosts_prefix}}_all.conf"
+        owner: root
+        group: root
+        mode: 0640
+      listen: restart dhcpd
+
+    - name: restart dhcpd - service
+      service:
+        name: dhcpd
+        state: restarted
+      listen: restart dhcpd
+
+
+
