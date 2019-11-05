@@ -1,0 +1,49 @@
+#!/usr/bin/ansible-playbook
+---
+- name: Publish/Promote a new version of a content view
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  vars_prompt:
+    - name: foreman_user
+      prompt: Foreman Username
+      type: str
+    - name: foreman_password
+      prompt: Foreman Password
+      type: str
+      private: yes
+    - name: foreman_fqdn
+      prompt: Foreman FQDN
+      type: string
+    - name: organization
+      prompt: Organization
+      type: string
+    - name: content_view_id
+      prompt: Content View ID
+      type: int
+      
+  vars:
+    from_environment: Library
+    to_environment: Prod
+
+  tasks:
+    - name: Configure foreman credentials
+      template:
+        src: cli_config.yml.j2
+        dest: ~/.hammer/cli.modules.d/foreman.yml
+        mode: '0600'
+
+    - name: Publish content view
+      shell: >
+        /usr/bin/hammer content-view publish
+        --id {{ content_view_id }} --organization {{ organization }}
+        --description 'Auto-Published by Ansible'
+
+    - name: Promote content view
+      shell: >
+        /usr/bin/hammer content-view version promote
+        --content-view-id {{ content_view_id }} 
+        --organization {{ organization }}
+        --from-lifecycle-environment {{ from_environment }}
+        --to-lifecycle-environment {{ to_environment }}
